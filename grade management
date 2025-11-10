@@ -1,0 +1,97 @@
+from fastapi import FastAPI, Depends, HTTPException
+from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, create_engine
+from sqlalchemy.orm import sessionmaker, Session, relationship, declarative_base
+from pydantic import BaseModel
+from typing import List, Optional
+import datetime
+
+
+DATABASE_URL = "sqlite test.db"
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+class Grade(Base):
+    __tablename__ = "grades"
+    id = Column(Integer, primary_key=True, index=True)
+    enrollment_id = Column(Integer)  # Assuming enrollments table exists
+    grade_value = Column(String)     # e.g., "A", "B+", "75%"
+    graded_by = Column(String)       # instructor name or ID
+    graded_at = Column(DateTime, default=datetime.datetime.utcnow)
+    comments = Column(String, nullable=True)
+
+# Schemas
+class GradeCreate(BaseModel):
+    enrollment_id: int
+    grade_value: str
+    graded_by: str
+    comments: Optional[str] = None
+
+class GradeOut(GradeCreate):
+    id: int
+    graded_at: datetime.datetime
+    class Config:
+        orm_mode = True
+
+# CRUD functions
+def create_grade(db: Session, grade: GradeCreate):
+    db_grade = Grade(**grade.dict())
+    db.add(db_grade)
+    db.commit()
+    db.refresh(db_grade)
+    return db_grade
+
+def get_grades_by_enrollment(db: Session, enrollment_id: int):
+    return db.query(Grade).filter(Grade.enrollment_id == enrollment_id).all()
+
+def update_grade(db: Session, grade_id: int, new_value: str):
+    grade = db.query(Grade).filter(Grade.id == grade_id).first()
+    if grade:
+        grade.grade_value = new_value
+        db.commit()
+        db.refresh(grade)
+    return grade
+
+def delete_grade(db: Session, grade_id: int):
+    grade = db.query(Grade).filter(Grade.id == grade_id).first()
+    if grade:
+        db.delete(grade)
+        db.commit()
+    return grade
+
+# FastAPI app
+app = FastAPI()
+
+# Create tables
+Base.metadata.create_all(bind=engine)
+
+# Dependency
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+@app.post("/grades/", response_model=GradeOut)
+def api_create_grade(grade: GradeCreate, db: Session = Depends(get_db)):
+    return create_grade(db, grade)
+
+@app.get("/grades/{enrollment_id}", response_model=List[GradeOut])
+def api_get_grades(enrollment_id: int, db: Session = Depends(get_db)):
+    return get_grades_by_enrollment(db, enrollment_id)
+
+@app.put("/grades/{grade_id}", response_model=GradeOut)
+def api_update_grade(grade_id: int, new_value: str, db: Session = Depends(get_db)):
+    grade = update_grade(db, grade_id, new_value)
+    if not grade:
+        raise HTTPException(status_code=404, detail="Grade not found")
+    return grade
+
+@app.delete("/grades/{grade_id}")
+def api_delete_grade(grade_id: int, db: Session = Depends(get_db)):
+    grade = delete_grade(db, grade_id)
+    if not grade:
+        raise HTTPException(status_code=404, detail="Grade not found")
+    return {"detail": "Grade deleted"}
